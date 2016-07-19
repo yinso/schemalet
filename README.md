@@ -326,14 +326,16 @@ var Point = Schema.makeClass({
   params: [
     { type: 'number' },
     { type: 'number' }
-  ]
+  ],
   // return is unecessary.
   // async is not supported in this case.
-}, function (x, y) {
-  this.x = x;
-  this.y = y;
+  $init: function (x, y) {
+    this.x = x;
+    this.y = y;
+  }
 });
 ```
+
 
 ### Differences From JSON Schema
 
@@ -357,8 +359,16 @@ Given that the idea of the contract system is to write embedded JSON schema, `$r
 
 `allOf` is only used when deserializing the JSON schema, and not allowed as a construction param. Use `$parent` instead.
 
-### $parent
+### $base (not part of JSON Schema)
 
-Parent is provided instead of `allOf` to map closer to regular OOP programming.
+`$base` (the base class) is provided instead of `allOf` to map closer to regular OOP programming.
+
+### $class (not part of JSON Schema)
+
+`$class` is implicitly defined via `Schema.makeClass`. It can also be explicitly defined if the class is created outside of the `Schema.makeClass` process.
+
+### $prototype (not part of JSON Schema)
+
+`$prototype` can be provided to define the prototype of the class.
 
 

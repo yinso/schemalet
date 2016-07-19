@@ -993,7 +993,6 @@ class ProcedureSchema extends Schema
     counter = 0
     normalized = []
     for param, i in @params
-      #console.log 'ProcedureSchema.fillHoles', i, param.schema.type, remainRequired, remainOptional, counter, args[counter], normalized, param.isRequired(), @arity
       if param.isRequired()
         if remainRequired == 0 # should never happen
           throw new AppError
@@ -1031,7 +1030,6 @@ class ProcedureSchema extends Schema
               param.defaultVal()
             else
               arg
-          #console.log 'ProcdureSchema.validateArguments', i, arg, normed, param
           param.validate normed, path.push(i)
         else if @restParams
           @restParams.validate arg, path.push(i)
@@ -1042,7 +1040,6 @@ class ProcedureSchema extends Schema
       Func = (args...) ->
         [ extracted , _callback ] = schemaObj.extractCallback args
         self = @
-        #console.log 'Func.normalized.promise', normalized, _callback, schemaObj
         if schemaObj.isFunction _callback
           try
             normalized = schemaObj.validateArguments extracted

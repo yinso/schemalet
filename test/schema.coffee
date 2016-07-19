@@ -355,8 +355,6 @@ describe 'schema test', ->
           items:
             type: 'integer'
 
-      
-
   describe 'tuple schema test', ->
     schema = Schema.makeSchema { type: 'array', items: [ { type: 'integer' }, { type: 'number' } ] }
     
