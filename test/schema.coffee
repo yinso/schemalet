@@ -1,5 +1,6 @@
 { assert } = require 'chai'
 Schema = require '../src/schema'
+uuid = require 'uuid'
 
 describe 'schema test', ->
   
@@ -275,6 +276,30 @@ describe 'schema test', ->
       assert.ok schema.isa '123-45-6789'
       assert.notOk schema.isa '1234567890'
 
+    it 'can handle string with format constraint (date)', ->
+      schema = Schema.makeSchema
+        type: 'string'
+        format: 'date-time'
+      assert.ok schema.isa '2016-08-01T00:00:00Z'
+      assert.ok schema.isa (new Date()).toISOString()
+
+    it 'can handle string with format constraint (uuid)', ->
+      schema = Schema.makeSchema
+        type: 'string'
+        format: 'uuid'
+      id1 = uuid.v4()
+      console.log 'string format id1', id1
+      assert.ok schema.isa id1
+ 
+    it 'can handle custom format constraint', ->
+      Schema.setFormat 'ssn', /^\d{3}-?\d{2}-?\d{4}$/
+      schema = Schema.makeSchema
+        type: 'string'
+        format: 'ssn'
+      assert.ok schema.isa '123456789'
+      assert.ok schema.isa '123-45-6789'
+      assert.notOk schema.isa '12345678'
+
   describe 'null schema test', ->
     it 'can convert null', ->
       schema = Schema.makeSchema { type: 'null' }
@@ -462,13 +487,25 @@ describe 'schema test', ->
           type: ['integer']
 
   describe 'schema make class test', ->
+    it 'can manually create object with $class property', ->
+      schema = Schema.makeSchema
+        type: 'string'
+        format: 'date-time'
+        $class: Date
+      assert.ok schema.convert('2016-08-01T00:00:00Z') instanceof Date
+      assert.ok schema.isa new Date()
+
     it 'can make class', ->
-      Foo = Schema.makeClass
+      Foo = Schema.makeClass {
         properties:
           foo:
             type: 'integer'
           bar:
             type: 'number'
+      },
+      (options) ->
+        @foo = options.foo
+        @bar = options.bar
       foo = Foo { foo: 1 , bar: 2 }
       assert.equal foo.foo, 1
       assert.equal foo.bar, 2
@@ -483,28 +520,33 @@ describe 'schema test', ->
         Foo { foo: 'hello' }
   
     it 'can make use of $init', ->
-      Foo = Schema.makeClass
-        $init: (options) ->
-          @result = options.foo + options.bar
+      Foo = Schema.makeClass {
         properties:
           foo:
             type: 'integer'
           bar:
             type: 'number'
+      },
+      (options) ->
+        @result = options.foo + options.bar
+
       foo = Foo { foo: 1, bar: 2 }
       assert.equal foo.result, 3
 
     it 'can make use of $prototype', ->
-      Foo = Schema.makeClass
-        properties:
-          foo:
-            type: 'integer'
-          bar:
-            type: 'number'
-        $prototype:
+      Foo = Schema.makeClass {
+          properties:
+            foo:
+              type: 'integer'
+            bar:
+              type: 'number'
+        },
+        (options) -> @result = options.foo + options.bar,
+        {
           sayHello: () ->
             say: 'hello'
             object: @
+        }
       foo = new Foo { foo: 1, bar: 2 }
       assert.deepEqual foo.sayHello(), { say: 'hello', object: foo }
 
@@ -708,7 +750,6 @@ describe 'schema test', ->
               done e
         .catch done
 
-
     it 'can create async function with optional param', (done) ->
       test = Schema.makeFunction {
           params:
@@ -778,4 +819,40 @@ describe 'schema test', ->
             catch e
               done e
         .catch done
+
+  ###
+  describe 'interface test', ->
+    Animal = null
+    it 'can create interface', ->
+      Animal = Schema.makeSchema
+        type: 'interface'
+        properties:
+          type:
+            type: 'string'
+        $init:
+          type: 'function'
+          params: [
+            { type: [ 'string', 'null' ], default: null }
+          ]
+        $prototype:
+          talk:
+            type: 'function'
+            params: []
+            returns:
+              type: 'string'
+
+    it 'can implement interface', ->
+      Cat = Animal.implement
+        $init: (@name) ->
+          @type = 'cat'
+        $prototype:
+          talk: () ->
+            if @name
+              'meow, my name is ' + @name
+            else
+              'meow'
+
+      garfield = new Cat('Garfield')
+      assert.equal 'meow, my name is Garfield', garfield.meow()
+  ###
 

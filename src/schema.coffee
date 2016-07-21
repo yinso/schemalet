@@ -7,6 +7,9 @@ _extend = (target, sources...) ->
       target[key] = val
   target
 
+_isFunction = (v) ->
+  typeof(v) == 'function' or (v instanceof Function)
+
 # this is somewhat similar to ObjectSchema (which forms an env).
 class SchemaEnv
   constructor: () ->
@@ -189,10 +192,29 @@ class PatternConstraint extends Constraint
   toJSON: () ->
     pattern: @pattern.toJSON()
 
+formatConstraintMap =
+  'date-time': (v) ->
+    v.match /^\d{4}-?\d{2}-?\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/
+  uuid: (v) ->
+    v.match /^[a-zA-Z0-9]{8}-?[a-zA-Z0-9]{4}-?[a-zA-Z0-9]{4}-?[a-zA-Z0-9]{4}-[a-zA-Z0-9]{12}$/
+
+class FormatConstraint extends Constraint
+  constructor: (@type) ->
+    @format = @type.schema.format
+    if not formatConstraintMap.hasOwnProperty @format
+      throw new AppError
+        error: 'UnknownFormat'
+        format: @format
+        method: 'FormatConstraint.ctor'
+  check: (v) ->
+    formatConstraintMap[@format] v
+  equal: (other) ->
+    (other instanceof FormatConstraint) and @format == other.format
+
 class Schema
   constructor: (@schema, @prev) ->
-    if @schema.hasOwnProperty('default')
-      @validate @schema.default
+    if @isOptional()
+      @validate @defaultVal()
     if @schema.hasOwnProperty('$base')
       if @schema.$base instanceof Schema
         @$base = @verifyBase @schema.$base
@@ -202,24 +224,36 @@ class Schema
         throw new AppError
           type: 'invalidBase'
           schema: @schema
+    if @schema.hasOwnProperty '$class'
+      if _isFunction(@schema.$class)
+        @$class = @schema.$class
+      else
+        throw new AppError
+          type: 'invalidClass'
+          schema: @schema
     @initConstraints()
-    if @isOptional()
-      @defaultVal = () =>
-        if @schema.hasOwnProperty('defaultProc')
-          @schema.defaultProc.apply @, arguments
-        else if @schema.hasOwnProperty('default')
-          @schema.default
   convert: (v, schemaPath = new SchemaPath()) ->
-    if (v == null or v == undefined) and @schema.hasOwnProperty('default')
-      @schema.default
+    if (v == null or v == undefined) and @isOptional()
+      @getDefaultValue()
     else if @isa v
-      v
+      if @$class
+        if v instanceof @$class
+          v
+        else
+          new @$class v
+      else
+        v
     else
       @valueConvert v, schemaPath
   isRequired: () ->
     not @isOptional()
   isOptional: () ->
     @schema.hasOwnProperty('default') or @schema.hasOwnProperty('defaultProc')
+  defaultVal: () ->
+    if @schema.hasOwnProperty('defaultProc')
+      @schema.defaultProc.apply @, arguments
+    else if @schema.hasOwnProperty('default')
+      @schema.default
   equal: (other) ->
     if not (other instanceof @constructor)
       return false
@@ -243,6 +277,9 @@ class Schema
     if @hasOwnProperty('$base')
       if not @$base.isa(v)
         return false
+    if @hasOwnProperty('$class')
+      if (v instanceof @$class)
+        return true
     if not @isType v
       return false
     if not @checkConstraints v
@@ -365,7 +402,7 @@ class Schema
       type: @schema.type
     if @hasOwnProperty 'constraint'
       _extend res, @constraint.toJSON()
-    _extend res, @_toJSON()    
+    _extend res, @_toJSON()
   _toJSON: () ->
     {}
 
@@ -378,7 +415,8 @@ class Schema
         @makeSchema schema
     schemaObj.makeFunction proc
 
-  @makeClass: (schema) ->
+  @makeClass: (schema, $init, $prototype, $base, $static) ->
+    #console.log 'Schema::makeClass', $prototype
     name =
       if schema.hasOwnProperty('id')
         schema.id
@@ -389,37 +427,38 @@ class Schema
         schema
       else
         @makeSchema schema
-    innerCtor =
-      if schema.hasOwnProperty('$init')
-        schema.$init
-      else
-        (res) ->
-          for key, val of res
-            @[key] = val
+    $init = $init or schema.$init or (options) -> _extend @, options
+    $prototype = $prototype or schema.$prototype or {}
+    $base = $prototype.$base or schema.$base
+    if not _isFunction $init
+      throw new AppError
+        error: 'RequiredParameter'
+        name: '$init'
+        message: '$init must be a function'
+        method: 'Schema::makeClass'
+    getSchema = () -> schemaObj
     Ctor = (arg) ->
       if not (@ instanceof Ctor)
         return new Ctor arg
-      res = schemaObj.convert arg
-      innerCtor.call @, arg
+      res = schemaObj.valueConvert arg
+      $init.call @, arg
       return
     Ctor._schema = schemaObj
-    if schema.hasOwnProperty('$base')
-      if schema.$base instanceof Function
+    if $base
+      if _isFunction $base
         require('util').inherits Ctor, schema.$base
-      else if schema.$base instanceof Schema
+      else if $base instanceof Schema
         Parent = @makeClass schema.$base
         require('util').inherits Ctor, Parent
-      else if schema.$base instanceof Object
-        Ctor.prototype = schema.base
+      else if $base instanceof Object
+          Ctor.prototype = schema.base
       else
         throw new AppError
           error: 'MakeClass.invalidBase'
           method: 'Schema.makeClass'
           schema: schema
-        
-    if schema.hasOwnProperty('$prototype') and (schema.$prototype instanceof Object)
-      for key, val of schema.$prototype
-        Ctor.prototype[key] = val
+    for key, val of $prototype
+      Ctor.prototype[key] = val
     schema.$class = Ctor
     Ctor
 
@@ -430,7 +469,7 @@ class Schema
         method: 'SimpleSchema.ctor'
     if schema instanceof Schema
       return schema
-    if schema instanceof Function # a case where the constructor is passed in.
+    if _isFunction schema
       return @makeOneSchema
         type: 'object'
         $init: schema
@@ -460,6 +499,8 @@ class Schema
           new ArraySchema schema, prev
       when 'function', 'procedure'
         new ProcedureSchema schema, prev
+      when 'interface'
+        new InterfaceSchema schema, prev
       else # default treat it as 'object'
         if schema.hasOwnProperty('additionalProperties')
           return new MapSchema schema, prev
@@ -472,6 +513,21 @@ class Schema
       else
         prev.resolve schema.$ref
     current.specialize schema
+
+  @setFormat: (fmt, checker) ->
+    checkProc =
+      if checker instanceof RegExp
+        (v) ->
+          v.match checker
+      else if _isFunction checker
+        checker
+      else
+        throw new AppError
+          error: 'UnknownType'
+          message: 'checker_must_be_function_or_regexp'
+          method: 'Schema.setFormat'
+          checker: checker
+    formatConstraintMap[fmt] = checkProc
 
 class NumberSchema extends Schema
   isType: (v) ->
@@ -545,6 +601,7 @@ class StringSchema extends Schema
     minLength: MinLengthConstraint
     maxLength: MaxLengthConstraint
     pattern: PatternConstraint
+    format: FormatConstraint
   isType: (v) ->
     typeof(v) == 'string' or v instanceof String
   valueConvert: (v) ->
@@ -560,7 +617,7 @@ class NullSchema extends Schema
       @invalidType v, schemaPath
   verifyBase: (baseSchema) ->
     @finalTypeNonDerivable()
-  toJSON: () ->
+  _toJSON: () ->
     constraint =
       if @hasOwnProperty('constraint')
         @constraint.toJSON()
@@ -701,7 +758,7 @@ class TupleSchema extends Schema
         schema: @schema
         path: schemaPath
         length: ary.length
-  toJSON: () ->
+  _toJSON: () ->
     res = super()
     res.items =
       for item in @items
@@ -718,7 +775,7 @@ class ObjectSchema extends Schema
       else
         []
     super schema, prev
-    if ProcedureSchema.prototype.isFunction schema.$init
+    if _isFunction schema.$init
       @$init = schema.$init
   equal: (other) ->
     if @properties.length != other.properties.length
@@ -740,7 +797,7 @@ class ObjectSchema extends Schema
       true
     else
       false
-  valueConvert: (v, schemaPath) ->
+  valueConvert: (v, schemaPath = new SchemaPath()) ->
     if v instanceof Object
       res = {}
       for [ key, schema ] in @properties
@@ -753,7 +810,7 @@ class ObjectSchema extends Schema
       if key == name
         return val
     @unknownProperty name
-  toJSON: () ->
+  _toJSON: () ->
     res = super()
     res.properties = {}
     for [ key, item ] in @properties
@@ -782,7 +839,7 @@ class MapSchema extends Schema
     name
   verifyBase: (baseSchema) ->
     @finalTypeNonDerivable()
-  toJSON: () ->
+  _toJSON: () ->
     res = super()
     res.additionalProperties = @property.toJSON()
     res
@@ -824,7 +881,7 @@ class OneOfSchema extends Schema
       @unknownProperty(name)
   verifyBase: (baseSchema) ->
     @finalTypeNonDerivable()
-  toJSON: () ->
+  _toJSON: () ->
     result = {}
     for item, i in @items
       json = item.toJSON()
@@ -860,7 +917,7 @@ class AllOfSchema extends Schema
     for schema, i in @items
       val = schema.convert val, schemaPath.push("${i}")
     val
-  toJSON: () ->
+  _toJSON: () ->
     @schema
 
 
@@ -916,7 +973,7 @@ class ProcedureSchema extends Schema
       return false
     true
   isType: (v) ->
-    if @isFunction v
+    if _isFunction v
       if v.hasOwnProperty('_schema')
         @equal v._schema
     else
@@ -941,20 +998,18 @@ class ProcedureSchema extends Schema
       # http://stackoverflow.com/questions/22747068/is-there-a-max-number-of-arguments-javascript-functions-can-accept
       max = 32767 - 1 # -1 is for the async parameter.
     { min: min, max: max }
-  isFunction: (v) ->
-    typeof(v) == 'function' or (v instanceof Function)
   extractCallback: (args) ->
     if @arity.min == @arity.max # no optional + no rest params.
       if args.length == @arity.min
         [ args , undefined ]
-      else if args.length > @arity.min and @isFunction args[args.length - 1 ]
+      else if args.length > @arity.min and _isFunction args[args.length - 1 ]
         cb = args[args.length - 1]
         [ args.slice(0, args.length - 1), cb ]
       else
         [ args , undefined ]
     else if args.length <= @arity.min # if we only have the minimum of 
       [ args, undefined ]
-    else if not @isFunction args[args.length - 1]
+    else if not _isFunction args[args.length - 1]
       [ args , undefined ]
     else
       cb = args[args.length - 1]
@@ -1040,7 +1095,7 @@ class ProcedureSchema extends Schema
       Func = (args...) ->
         [ extracted , _callback ] = schemaObj.extractCallback args
         self = @
-        if schemaObj.isFunction _callback
+        if _isFunction _callback
           try
             normalized = schemaObj.validateArguments extracted
             proc.apply(self, normalized)
@@ -1067,7 +1122,7 @@ class ProcedureSchema extends Schema
       Func = (args...) ->
         [ extracted , _callback ] = schemaObj.extractCallback args
         self = @
-        if schemaObj.isFunction _callback
+        if _isFunction _callback
           try
             normalized = schemaObj.validateArguments extracted
             proc.call self, normalized..., (err, res) ->
@@ -1109,6 +1164,31 @@ class ProcedureSchema extends Schema
     Func._schema = schemaObj
     Func
 
+class InterfaceSchema extends ObjectSchema
+  constructor: (schema, prev) ->
+    super schema, prev
+    if not schema.hasOwnProperty('$init')
+      throw new AppError
+        error: 'RequiredParameter'
+        name: '$init'
+        method: 'InterfaceSchema.ctor'
+    @$init = Schema.makeSchema schema.$init, @
+    if not schema.hasOwnProperty('$init')
+      throw new AppError
+        error: 'RequiredParameter'
+        name: '$prototype'
+        method: 'InterfaceSchema.ctor'
+    @$prototype =
+      for key, val of schema.$prototype or {}
+        [ key, Schema.makeSchema val, @ ]
+  implement: (obj) -> ## TO be implemented...
+    if not obj.hasOwnProperty('$init')
+      throw new AppError
+        error: 'RequiredParameter'
+        name: '$prototype'
+        method: 'InterfaceSchema.implement'
+    # we need to create a new schema.
+    # 1 - gather the propertie schema.
 
 module.exports = Schema
 

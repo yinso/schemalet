@@ -23,7 +23,8 @@
   "devDependencies": {
     "chai": "^3.5.0",
     "coffee-script": "^1.10.0",
-    "mocha": "^2.5.3"
+    "mocha": "^2.5.3",
+    "uuid": "^2.0.2"
   },
   "keywords": [
     "json-schema",
@@ -35,4 +36,3 @@
     "type system"
   ]
 }
-

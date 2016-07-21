@@ -74,7 +74,11 @@ Instead of explicitly write out the schema spec, with Schemalet you can reuse th
       items: stringSchema // previously defined.
     });
     arrayOfStringSchema.isa(['hello','how','are','you']); // ==> true
+    arrayOfStringSchema.validate(['hello','how','are','you']); // ==> okay, pass through.
+
     arrayOfStringSchema.isa([1,2,3,4]); // ==> false
+    arrayOfStringSchema.validate([1,2,3,4]); // ==> throw error not string.
+
     arrayOfStringSchema.convert([1,2,3,4]); // ==> [ '1', '2', '3', '4' ]
 
     var objSchema = Schema.makeSchema({
@@ -90,11 +94,85 @@ Instead of explicitly write out the schema spec, with Schemalet you can reuse th
 
 ### Validation vs. Conversion
 
-Validation (via `.isa`) and conversion (via `.convert`) differ in the following:
+Validation (via `.validate` or `.isa`) and conversion (via `.convert`) differ in the following:
 
 1. Validation assumes that the passed in value is of the same type structure as the expected type. Conversion - as long as the passed in type has a defined conversion routine, can be converted into the target type.
 
-2. `.isa` returns a `true` or `false` result and hence doesn't do anything to modify the passed-in value. `.convert` on the other hand, returns the converted result or throws an error. It would also fill in the fields that have default values specified. It would not modify the original argument either.
+2. `.isa` returns a `true` or `false` result and hence doesn't do anything to modify the passed-in value. `.validate` utilizes `.isa` and throws upon `false`. `.convert` on the other hand, returns the converted result or throws an error. It would also fill in the fields that have default values specified. It would not modify the original argument either.
+
+### Conversion Default Value
+
+the `default` poperty is used to fill in a missing value. Given that `default` keeps only a shared value, it doesn't work well for mutable values like an object or an array - in such case, `defaultProc` should be used to generate a unique copy of the default value (this also works well in cases like `timestamp` when every copy would have its own value.
+
+Example:
+
+```
+// A default value for integer
+{
+  type: 'integer',
+  default: 10 // defaults to 10
+}
+
+// a default value for object
+{
+  type: 'object',
+  defaultProc: function () {
+    return {};
+  }
+}
+
+// a default value for timestamp
+{
+  type: 'string',
+  format: 'date-time',
+  defaultProc: function () {
+    return (new Date()).toISOString();
+  }
+}
+```
+
+### Conversion and $class
+
+Upon conversion, you can choose to have an additional processing of the data. A common thing to do is to change from a primitive value into an object (in the OOP sense).
+
+For example - in JSON Schema there is no `type: 'date'`. To return a `Date` object upon conversion, you can do the following:
+
+```
+var dateSchema = Schema.makeSchema({
+  type: 'string',
+  format: 'date-time',
+  $class: Date
+});
+```
+
+The `$class` property takes in a constructor that'll be utilized during validation and conversion. 
+
+During validation, if `$class` exists, it will be used as the first test (i.e. `instanceof`) of the validation. I.e. with the above example, both of the following validates:
+
+```
+dateSchema.validate('2016-07-19T00:00:00Z');
+dateSchema.validate(new Date());
+```
+
+### Constraints
+
+Constraints in JSON Schema is supported (if you found any that aren't supported, please file an issue).
+
+For format constraint, use `Schema.setSchema(<format_name>, <RegExp | Function>)` to setup custom checker.
+
+```
+// an ssn checker
+Schema.setFormat('ssn', /^\d{3}-?\d{2}-?\d{4}$/);
+
+var ssnSchema = Schema.makeSchema({
+  type: 'string',
+  format: 'ssn'
+});
+
+ssnSchema.validate('123-45-6789'); // OK
+ssnSchema.validate('abcdefghi'); // error
+
+```
 
 ### Function/Procedure Contracts
 
@@ -291,8 +369,79 @@ The following are the outcomes:
 
 ## Object-Oriented Programming with Schemalet
 
-Given that Schemalet can wrap around the definition of functions, and that functions are the building block of OOP in JavaScript, Schemalet can also be used as
-class constructors. When we think of each schema definition as a class, it becomes apparent on how it can be constructed.
+Since the building block of JavaScript OOP is functions and Schemalet can wrap around functions, you can directly use Schemalet-wrapped functions as JavaScript classes.
+
+```
+// manually creating a Schemalet-based class.
+
+var Animal = Schema.makeFunction({
+  params: [ ]
+}, function () { });
+
+var Cat = Schema.makeFunction({
+  params: [
+    { type: 'string' }
+  ]
+}, function (name) {
+  this.name = name;
+});
+
+Cat.prototype = new Animal();
+
+var cat = new Animal('Garfield');
+```
+
+Though this approach works, often times we want a class to represent a particular schema, rather than the more general form of functions, i.e. If we have an address schema, we want a Address class:
+
+```
+var addressSchema = Schema.makeSchema({
+  type: 'object',
+  properties: {
+    address: { type: 'string' },
+    address2: { type: [ 'string', 'null' ] },
+    city: { type: 'string' },
+    state: { type: 'string' },
+    zipCode: { type: 'string' }
+  }
+});
+
+var Address = Schema.makeClass(addressSchema...); // ??? 
+```
+
+As shown above, we can add a `$class` property to the schema object for conversion purposes. The constructor added must be the proper resultant type needed by the schema, since after it's added, `.convert`, `.isa`, and `.validate` creates a shortcut path for it, in such that if an object is the instance of the type, it is assume to be a valid value.
+
+To ensure the shortcut is properly generated, the `.makeClass` function takes in the following signature:
+
+```
+Schema.makeClass(schema, $init, $prototype, $base);
+```
+
+The class that's created would be attached to the `schema` object as the `$class` parameter.
+
+Since the `schema` object would get modified (via adding `$class`) as part of `.makeClass`, there is a different signature as well by specifying `$init`, `$prototype` in the schema objet itself.
+
+```
+var Address = Schema.makeClass({
+  type: 'object',
+  properties: {
+    address: { type: 'string' },
+    address2: { type: [ 'string', 'null' ] },
+    city: { type: 'string' },
+    state: { type: 'string' },
+    zipCode: { type: 'string' }
+  },
+  $init: function (options) {
+    this.address = options.address;
+    this.address2 = options.address2;
+    this.city = options.city;
+    this.state = options.state;
+    this.zipCode = options.zipCode;
+  },
+  $prototype: { ... }
+});
+```
+
+Both approaches are currently supported to allow for either style (some might prefer to keep the data part of the schema separated from the code part of the schema, while others might be the other way around). This might change in the future when it's clear that people predominantely use one style over the other.
 
 ```
 var Foo = Schema.makeClass({
@@ -359,6 +508,14 @@ Given that the idea of the contract system is to write embedded JSON schema, `$r
 
 `allOf` is only used when deserializing the JSON schema, and not allowed as a construction param. Use `$parent` instead.
 
+### defaultProc
+
+`defaultProc` is added for generating default values via a function (instead of just a statically shared copy of default val.
+
+### function schema type
+
+Schema type of `function|procedure` is added to help address the interface of a function.
+
 ### $base (not part of JSON Schema)
 
 `$base` (the base class) is provided instead of `allOf` to map closer to regular OOP programming.
@@ -370,5 +527,4 @@ Given that the idea of the contract system is to write embedded JSON schema, `$r
 ### $prototype (not part of JSON Schema)
 
 `$prototype` can be provided to define the prototype of the class.
-
 
