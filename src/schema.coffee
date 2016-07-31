@@ -15,7 +15,11 @@ class SchemaEnv
   constructor: () ->
 
 class SchemaPath
-  constructor: (@path = '', @prev = null) ->
+  constructor: (path = '', prev = null) ->
+    if not (@ instanceof SchemaPath)
+      return new SchemaPath path, prev
+    @path = path
+    @prev = prev
   push: (path) ->
     new SchemaPath path, @
   toString: () ->
@@ -212,9 +216,11 @@ class FormatConstraint extends Constraint
     (other instanceof FormatConstraint) and @format == other.format
 
 class Schema
+  @SchemaPath: SchemaPath
+  @SchemaEnv: SchemaEnv
   constructor: (@schema, @prev) ->
     if @isOptional()
-      @validate @defaultVal()
+      @validate @getDefaultValue()
     if @schema.hasOwnProperty('$base')
       if @schema.$base instanceof Schema
         @$base = @verifyBase @schema.$base
@@ -249,7 +255,7 @@ class Schema
     not @isOptional()
   isOptional: () ->
     @schema.hasOwnProperty('default') or @schema.hasOwnProperty('defaultProc')
-  defaultVal: () ->
+  getDefaultValue: () ->
     if @schema.hasOwnProperty('defaultProc')
       @schema.defaultProc.apply @, arguments
     else if @schema.hasOwnProperty('default')
@@ -396,7 +402,13 @@ class Schema
         allOf: (if allOf.hasOwnProperty('allOf') then allOf.allOf else [ allOf ]).concat [ @toJSONInner() ]
       }
     else
-      @toJSONInner()
+      res = @toJSONInner()
+      for key, val of @schema
+        if key.match(/^\$/) and not (val instanceof Object)
+          res[key] = val
+        else if key in ['id', 'name', 'description', 'title']
+          res[key] = val
+      res
   toJSONInner: () ->
     res =
       type: @schema.type
@@ -530,6 +542,7 @@ class Schema
     formatConstraintMap[fmt] = checkProc
 
 class NumberSchema extends Schema
+  type: 'number'
   isType: (v) ->
     typeof(v) == 'number'
   valueConvert: (v, schemaPath) ->
@@ -565,6 +578,7 @@ class NumberSchema extends Schema
     return @
 
 class IntegerSchema extends NumberSchema
+  type: 'integer'
   isType: (v) ->
     super(v) and Math.floor(v) == v
   valueConvert: (v, schemaPath) ->
@@ -580,6 +594,7 @@ class IntegerSchema extends NumberSchema
     Schema.prototype.verifyBase.call @, baseSchema
 
 class BooleanSchema extends Schema
+  type: 'boolean'
   isType: (v) ->
     typeof(v) == 'boolean'
   valueConvert: (v, schemaPath) ->
@@ -596,6 +611,7 @@ class BooleanSchema extends Schema
     @finalTypeNonDerivable()
 
 class StringSchema extends Schema
+  type: 'string'
   @constraintMap:
     enum: EnumConstraint
     minLength: MinLengthConstraint
@@ -608,6 +624,7 @@ class StringSchema extends Schema
     v.toString()
 
 class NullSchema extends Schema
+  type: 'null'
   isType: (v) ->
     v == null
   valueConvert: (v, schemaPath) ->
@@ -664,6 +681,7 @@ class UniqueItemsConstraint extends Constraint
     unique: true
 
 class ArraySchema extends Schema
+  type: 'array'
   @constraintMap:
     enum: EnumConstraint
     minItems: MinItemsConstraint
@@ -682,6 +700,19 @@ class ArraySchema extends Schema
       true
     else
       false
+  isOptional: () ->
+    res = super()
+    if res
+      return true
+    # if it has a min item == 0
+    if not @constraint
+      return true
+    return false
+  getDefaultValue: () ->
+    if @schema.hasOwnProperty('defaultProc') or @schema.hasOwnProperty('default')
+      super()
+    else
+      []
   valueConvert: (v, schemaPath) ->
     if typeof(v) == 'string' and @schema.hasOwnProperty('delim')
       values = v.split(@schema.delim)
@@ -705,8 +736,8 @@ class ArraySchema extends Schema
     res
 
 class TupleSchema extends Schema
+  type: 'tuple'
   constructor: (schema, prev) ->
-    super schema, prev
     @items =
       for item in schema.items
         Schema.makeSchema item, @
@@ -715,6 +746,7 @@ class TupleSchema extends Schema
         error: 'unsupportedSchemaProperty'
         property: 'additionalItems'
         schema: schema
+    super schema, prev
   equal: (other) ->
     if @items.length != other.items.length
       return false
@@ -738,6 +770,20 @@ class TupleSchema extends Schema
         false
     else
       false
+  isOptional: () ->
+    res = super()
+    if res
+      return true
+    for item in @items
+      if not item.isOptional()
+        return false
+    true
+  getDefaultValue: () ->
+    if @schema.hasOwnProperty('defaultProc') or @schema.hasOwnProperty('default')
+      super()
+    else
+      for item in @items
+        item.getDefaultValue()
   isRightLength: (ary) ->
     ary.length >= @items.length + @baseLength()
   valueConvert: (v, schemaPath) ->
@@ -767,6 +813,7 @@ class TupleSchema extends Schema
   #resolveName: (name) ->
 
 class ObjectSchema extends Schema
+  type: 'object'
   constructor: (schema, prev) ->
     @properties =
       if schema.hasOwnProperty('properties')
@@ -797,6 +844,22 @@ class ObjectSchema extends Schema
       true
     else
       false
+  isOptional: () ->
+    res = super()
+    if res
+      true
+    for [ key, prop ] in @properties
+      if not prop.isOptional()
+        return false
+    true
+  getDefaultValue: () ->
+    if @schema.hasOwnProperty('defaultProc') or @schema.hasOwnProperty('default')
+      super()
+    else
+      res = {}
+      for [ key, prop ] in @properties
+        res[key] = prop.getDefaultValue()
+      res
   valueConvert: (v, schemaPath = new SchemaPath()) ->
     if v instanceof Object
       res = {}
@@ -818,6 +881,7 @@ class ObjectSchema extends Schema
     res
 
 class MapSchema extends Schema
+  type: 'map'
   constructor: (schema, prev) ->
     super schema, prev
     @property = Schema.makeSchema schema.additionalProperties, @
@@ -829,6 +893,18 @@ class MapSchema extends Schema
         if not @property.isa val
           return false
     true
+  isOptional: () ->
+    res = super()
+    if res
+      return true
+    if not @constraint
+      return true
+    false
+  getDefaultValue: () ->
+    if @schema.hasOwnProperty('defaultProc') or @schema.hasOwnProperty('default')
+      super()
+    else
+      {}
   valueConvert: (v, schemaPath) ->
     res = {}
     for key, val of v
@@ -845,11 +921,12 @@ class MapSchema extends Schema
     res
 
 class OneOfSchema extends Schema
+  type: 'oneOf'
   constructor: (schema, prev) -> # has multiple types.
-    super schema, prev
     @items =
       for type in schema.type
         Schema.makeSchema _extend({}, schema, { type: type }), @
+    super schema, prev
   _equal: (other) ->
     if @items.length != other.items.length
       return false
@@ -862,6 +939,23 @@ class OneOfSchema extends Schema
       if schema.isa v
         return true
     false
+  isOptional: () ->
+    res = super()
+    if res
+      return true
+    for item in @items
+      if item.isOptional()
+        return true
+    false
+  getDefaultValue: () ->
+    if @schema.hasOwnProperty('defaultProc') or @schema.hasOwnProperty('default')
+      super()
+    else
+      for item in @items
+        try
+          return item.getDefaultValue()
+        catch e
+          continue
   valueConvert: (v, schemaPath) ->
     for schema, i in @items
       try
@@ -895,11 +989,12 @@ class OneOfSchema extends Schema
 
 # all of is 
 class AllOfSchema extends Schema
+  type: 'allOf'
   constructor: (schema, prev) ->
-    super schema, prev
     @items =
       for item in schema.allOf
         Schema.makeSchema inner, @
+    super schema, prev
   _equal: (other) ->
     if @items.length != other.items.length
       return false
@@ -937,6 +1032,7 @@ class AllOfSchema extends Schema
 # }
 
 class ProcedureSchema extends Schema
+  type: 'procedure'
   constructor: (schema, prev) ->
     super schema, prev
     @params =
@@ -1082,7 +1178,7 @@ class ProcedureSchema extends Schema
         if i < @params.length
           normed =
             if not param.isRequired() and arg == undefined
-              param.defaultVal()
+              param.getDefaultValue()
             else
               arg
           param.validate normed, path.push(i)
@@ -1165,6 +1261,7 @@ class ProcedureSchema extends Schema
     Func
 
 class InterfaceSchema extends ObjectSchema
+  type: 'interface'
   constructor: (schema, prev) ->
     super schema, prev
     if not schema.hasOwnProperty('$init')

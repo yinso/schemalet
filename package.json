@@ -13,8 +13,8 @@
     "node": ">= 0.8.4"
   },
   "scripts": {
-    "test": "./node_modules/.bin/mocha --compilers coffee:coffee-script/register --recursive",
-    "prepublish": "make"
+    "make": "./node_modules/.bin/coffee --output ./lib --compile ./src",
+    "test": "./node_modules/.bin/mocha --compilers coffee:coffee-script/register --recursive"
   },
   "dependencies": {
     "bluebird": "^3.4.1",

@@ -380,6 +380,13 @@ describe 'schema test', ->
           items:
             type: 'integer'
 
+    it 'can handle array default', ->
+      schema = Schema.makeSchema
+        type: 'array'
+        items:
+          type: 'integer'
+      assert.deepEqual [], schema.convert undefined
+
   describe 'tuple schema test', ->
     schema = Schema.makeSchema { type: 'array', items: [ { type: 'integer' }, { type: 'number' } ] }
     
@@ -403,6 +410,21 @@ describe 'schema test', ->
       assert.ok derived.isa [ 1 , 2 , true, 'hello' ]
       assert.notOk derived.isa [ true, 'hello' ]
       assert.ok derived.isa [ 1 , 2 , true, 'hello' , false ] # this is a weird rule - the same as derived objects.
+
+    it 'can handle default value', ->
+      schema = Schema.makeSchema
+        type: 'array'
+        items: [
+          {
+            type: 'integer'
+            default: 5
+          }
+          {
+            type: 'integer'
+            default: 10
+          }
+        ]
+      assert.deepEqual [ 5 , 10 ] , schema.convert undefined
 
   describe 'object schema test', ->
     schema = Schema.makeSchema
@@ -434,6 +456,30 @@ describe 'schema test', ->
       assert.notOk derived.isa { foo: 1, bar: [ true, false ] }
       assert.ok derived.isa { foo: 1, bar: [ true, false ], baz: true, baw: 'hello', xyz: 'more prop than defined is okay' }
 
+    it 'can handle default value', ->
+      schema = Schema.makeSchema
+        type: 'object'
+        properties:
+          foo:
+            type: 'integer'
+            default: 5
+          bar:
+            type: 'string'
+            default: 'hello'
+          tuple:
+            type: 'array'
+            items: [
+              {
+                type: 'boolean'
+                default: true
+              }
+              {
+                type: 'number'
+                default: 3.14
+              }
+            ]
+      assert.deepEqual { foo: 5, bar: 'hello', tuple: [ true , 3.14 ] }, schema.convert undefined
+
   describe 'map schema test', ->
     schema = Schema.makeSchema
       type: 'object'
@@ -457,6 +503,13 @@ describe 'schema test', ->
           type: 'object'
           additionalProperties:
             type: 'integer'
+
+    it 'can handle default value', ->
+      schema = Schema.makeSchema
+        type: 'object'
+        additionalProperties:
+          type: 'integer'
+      assert.deepEqual {}, schema.convert undefined
 
   describe 'one of schema test', ->
     schema = Schema.makeSchema
@@ -485,6 +538,19 @@ describe 'schema test', ->
         derived = Schema.makeSchema
           $base: base
           type: ['integer']
+
+    it 'can handle default value', ->
+      schema = Schema.makeSchema
+        type: ['object', 'null']
+        properties:
+          foo:
+            type: 'integer'
+            default: 10
+          bar:
+            type: 'array'
+            items:
+              type: 'boolean'
+      assert.deepEqual { foo: 10, bar: [] }, schema.convert undefined
 
   describe 'schema make class test', ->
     it 'can manually create object with $class property', ->
